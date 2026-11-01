@@ -1,0 +1,71 @@
+name: Fork build
+
+# Fork only, never proposed upstream. Builds any ref with Xcode 27 so the app can be
+# tested on a Mac that cannot run Xcode 27, and uploads an ad hoc signed app.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build
+        required: true
+      test:
+        description: Run the macOS test suite before packaging
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-build-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Toolchain
+        run: xcodebuild -version && swift --version
+      - name: Validate resources
+        run: |
+          python3 Scripts/check-platform-boundaries.py
+          python3 Scripts/generate-resources.py --check
+          python3 Scripts/validate-localizations.py
+      - name: Test shared core
+        run: swift test --force-resolved-versions
+      - name: Test macOS application
+        if: inputs.test
+        run: |
+          mkdir -p logs
+          xcodebuild test -project Platforms/macOS/FoldGit.xcodeproj -scheme FoldGit \
+            -destination 'platform=macOS' -derivedDataPath build/macos \
+            -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO > logs/macos-test.log 2>&1 || {
+            grep -nE 'error:|warning: .*FoldGit|Test Case .* failed|failed \(|✘|XCTAssert|Testing failed' logs/macos-test.log | head -150
+            exit 1
+          }
+          grep -E 'Executed [0-9]+ tests|Test run with' logs/macos-test.log | tail -3
+      - name: Package
+        run: |
+          Scripts/package-macos.sh "$RUNNER_TEMP/out" || { mkdir -p logs; cp "$RUNNER_TEMP/out/build.log" logs/ 2>/dev/null; exit 1; }
+          cat "$RUNNER_TEMP/out/BUILD-INFO.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FoldGit-app-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/out/*.zip
+            ${{ runner.temp }}/out/BUILD-INFO.txt
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.run_number }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
