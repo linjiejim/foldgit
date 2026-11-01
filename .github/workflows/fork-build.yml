@@ -51,6 +51,9 @@ jobs:
             exit 1
           }
           grep -E 'Executed [0-9]+ tests|Test run with' logs/macos-test.log | tail -3
+      - name: Validate compiler-extracted localization keys
+        if: inputs.test
+        run: python3 Scripts/validate-localizations.py --extracted-directory build/macos/Build/Intermediates.noindex/FoldGit.build
       - name: Package
         run: |
           Scripts/package-macos.sh "$RUNNER_TEMP/out" || { mkdir -p logs; cp "$RUNNER_TEMP/out/build.log" logs/ 2>/dev/null; exit 1; }
